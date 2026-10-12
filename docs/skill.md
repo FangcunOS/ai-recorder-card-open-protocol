@@ -39,7 +39,9 @@ python tools/qs668-bringup.py --address <ADDR> --import-first --out archive/audi
 
 `qs668-init-env.py` creates `.env` from `.env.example` only when `.env` is missing. Ask the user to fill Doubao keys before transcription.
 
-After import, `--import-first --transcribe` runs cloud ASR. A failed transcription does not undo the imported audio. Optional `--title` / `--customer` go into corpus front matter.
+After import, `--import-first --transcribe` runs cloud ASR. A failed transcription does not undo the imported audio. Optional `--title` / `--customer` go into corpus front matter. Existing `archive/corpus/<stem>.md` is skipped unless `--force` is set with `--transcribe`.
+
+Batch: `--import-all --transcribe`, or repeatable / comma-separated `--filename`. Use only one of `--import-first`, `--import-all`, or `--filename`.
 
 Recording control: `--record-state`, `--record start|pause|resume|save`. Realtime audio: `--realtime 5`. Do not run import and realtime together.
 
@@ -60,9 +62,10 @@ After import, optional cloud ASR defaults to [Doubao / Volcengine file ASR](http
 ```bash
 python -m pip install -r tools/requirements.txt
 python tools/qs668-transcribe.py archive/audio/note20261011-161858.wav
+python tools/qs668-transcribe.py archive/audio/note20261011-161858.wav --force
 ```
 
-Output goes to `archive/corpus/<stem>.md`. Very long files can still be split and merged. Set `QS668_ASR_PROVIDER=openai` for an OpenAI-compatible fallback. Do not commit `.env`.
+Output goes to `archive/corpus/<stem>.md`. If that file already exists, ASR is skipped unless `--force`. Speaker diarization is on by default and renders as `[00:02] 说话人1：...`. A short single-speaker clip may only show speaker 1. Very long files can still be split and merged. Set `QS668_ASR_PROVIDER=openai` for an OpenAI-compatible fallback. Do not commit `.env`.
 
 Where the phone, PC, and recorder card each keep data is described in [Data relationship](./data-relationship.md).
 

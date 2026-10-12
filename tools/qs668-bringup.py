@@ -231,6 +231,62 @@ def stem_from_name(name: str) -> str:
     return name
 
 
+def normalize_filename_args(values: list[str] | None) -> list[str]:
+    """Expand repeated --filename and comma-separated lists; preserve order, drop empties."""
+    if not values:
+        return []
+    names: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        for part in raw.split(","):
+            name = part.strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            names.append(name)
+    return names
+
+
+def match_list_entry(files: list, wanted: str):
+    """Match a user filename against on-card list names (stem-tolerant)."""
+    wanted_stem = stem_from_name(wanted).lower()
+    for entry in files:
+        if entry.name == wanted:
+            return entry
+    for entry in files:
+        if stem_from_name(entry.name).lower() == wanted_stem:
+            return entry
+    for entry in files:
+        if entry.name.lower() == wanted.lower():
+            return entry
+    return None
+
+
+def resolve_import_targets(files: list, args: argparse.Namespace) -> list[str]:
+    """Return on-card list names to import."""
+    filenames = normalize_filename_args(getattr(args, "filename", None))
+    if args.import_all:
+        return [entry.name for entry in files]
+    if filenames:
+        targets: list[str] = []
+        missing: list[str] = []
+        for wanted in filenames:
+            entry = match_list_entry(files, wanted)
+            if entry is None:
+                missing.append(wanted)
+            else:
+                targets.append(entry.name)
+        if missing:
+            available = ", ".join(entry.name for entry in files) or "(empty)"
+            raise RuntimeError(
+                f"filename not on card: {', '.join(missing)}; available: {available}"
+            )
+        return targets
+    if args.import_first:
+        return [files[0].name]
+    return []
+
+
 async def import_file(session: Session, list_name: str, out_dir: Path) -> Path:
     candidates = import_name_candidates(list_name)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -386,7 +442,8 @@ async def run(args: argparse.Namespace) -> int:
         await scan_devices()
         return 0
 
-    importing = args.import_first or bool(args.filename)
+    filenames = normalize_filename_args(args.filename)
+    importing = args.import_first or args.import_all or bool(filenames)
     if importing and args.realtime is not None:
         raise SystemExit("Do not run file import and realtime audio at the same time.")
 
@@ -420,13 +477,41 @@ async def run(args: argparse.Namespace) -> int:
                 return 0
             if not files:
                 raise RuntimeError("file list empty")
-            target = args.filename or files[0].name
-            path = await import_file(session, target, Path(args.out))
-            print(f"DONE {path}")
-            if args.transcribe:
-                await asyncio.to_thread(run_transcribe_after_import, path, args)
-            else:
+            targets = resolve_import_targets(files, args)
+            if not targets:
+                raise RuntimeError("no import targets")
+            out_dir = Path(args.out)
+            saved: list[Path] = []
+            failed: list[str] = []
+            batch = len(targets) > 1
+            for index, target in enumerate(targets, start=1):
+                print(f"INFO import {index}/{len(targets)} {target}")
+                try:
+                    path = await import_file(session, target, out_dir)
+                except Exception as error:  # noqa: BLE001 - continue batch
+                    failed.append(f"{target}: {error}")
+                    print(f"WARN import failed {target}: {error}")
+                    if not batch:
+                        raise
+                    continue
+                saved.append(path)
+                print(f"DONE {path}")
+                if args.transcribe:
+                    await asyncio.to_thread(run_transcribe_after_import, path, args)
+
+            if not args.transcribe:
                 print("DONE corpus left empty under archive/corpus/")
+            print(
+                f"DONE import summary ok={len(saved)} failed={len(failed)} "
+                f"total={len(targets)}"
+            )
+            if failed and not saved:
+                raise RuntimeError("; ".join(failed))
+            if failed:
+                print("WARN some imports failed:")
+                for item in failed:
+                    print(f"  - {item}")
+                return 1
             return 0
 
         if args.status or args.record_state or record_action:
@@ -454,6 +539,8 @@ def run_transcribe_after_import(audio_path: Path, args: argparse.Namespace) -> N
         cmd.extend(["--title", args.title])
     if getattr(args, "customer", ""):
         cmd.extend(["--customer", args.customer])
+    if getattr(args, "force", False):
+        cmd.append("--force")
     print("INFO running cloud transcription after import")
     completed = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if completed.stdout:
@@ -474,11 +561,26 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--status", action="store_true", help="Read battery, capacity, firmware")
     parser.add_argument("--list", action="store_true", help="Read the on-card file list")
     parser.add_argument("--import-first", action="store_true", help="Import the first list entry")
-    parser.add_argument("--filename", help="Import this list name (extension may be restored)")
+    parser.add_argument(
+        "--import-all",
+        action="store_true",
+        help="Import every on-card list entry (order as listed)",
+    )
+    parser.add_argument(
+        "--filename",
+        action="append",
+        metavar="NAME",
+        help="Import this list name (repeatable or comma-separated; extension may be restored)",
+    )
     parser.add_argument(
         "--transcribe",
         action="store_true",
         help="After import, run cloud ASR into archive/corpus/ (requires Doubao/.env)",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="With --transcribe, re-run ASR even when corpus/<stem>.md already exists",
     )
     parser.add_argument("--title", default="", help="Corpus title when used with --transcribe")
     parser.add_argument("--customer", default="", help="Customer label when used with --transcribe")
@@ -501,20 +603,27 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
-    if args.transcribe and not (args.import_first or args.filename):
-        parser.error("--transcribe requires --import-first or --filename")
+    filenames = normalize_filename_args(args.filename)
+    import_modes = sum(bool(x) for x in (args.import_first, args.import_all, filenames))
+    if import_modes > 1:
+        parser.error("use only one of --import-first, --import-all, or --filename")
+    if args.transcribe and import_modes == 0:
+        parser.error("--transcribe requires --import-first, --import-all, or --filename")
+    if args.force and not args.transcribe:
+        parser.error("--force requires --transcribe")
     if not any([
         args.scan,
         args.status,
         args.list,
         args.import_first,
-        args.filename,
+        args.import_all,
+        filenames,
         args.record_state,
         args.record,
         args.realtime is not None,
     ]):
         parser.error(
-            "pass --scan, --status, --list, --import-first, --filename, "
+            "pass --scan, --status, --list, --import-first, --import-all, --filename, "
             "--record-state, --record, or --realtime"
         )
     return asyncio.run(run(args))

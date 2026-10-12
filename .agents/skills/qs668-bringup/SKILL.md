@@ -52,7 +52,21 @@ python tools/qs668-bringup.py --import-first --transcribe --out archive/audio
 
 After the first success, the address is cached in `.qs668-device` (gitignored).
 Later runs can omit `--address`. `--transcribe` runs cloud ASR after a
-successful import; if ASR fails, keep the audio and warn.
+successful import; if ASR fails, keep the audio and warn. When
+`archive/corpus/<stem>.md` already exists, transcription skips by default;
+pass `--force` with `--transcribe` to re-run and spend ASR quota again.
+
+Batch import (one BLE session):
+
+```bash
+python tools/qs668-bringup.py --import-all --transcribe --out archive/audio
+python tools/qs668-bringup.py --filename noteA.wav --filename noteB. --transcribe
+python tools/qs668-bringup.py --filename noteA.wav,noteB. --transcribe --force
+```
+
+Use only one of `--import-first`, `--import-all`, or `--filename`. Batch continues
+after a single import failure and prints a summary; exit code is non-zero if any
+failed.
 
 Useful variants:
 
@@ -99,12 +113,14 @@ After an import, when the user asks to transcribe:
 
 ```bash
 python tools/qs668-transcribe.py archive/audio/<stem>.wav
+python tools/qs668-transcribe.py archive/audio/<stem>.wav --force
 ```
 
 Default provider is Doubao / Volcengine Seed ASR. First run
 `python tools/qs668-init-env.py`, then ask the user to fill
 `QS668_ASR_DOUBAO_APP_ID` and `QS668_ASR_DOUBAO_ACCESS_KEY` in `.env`.
 Default language is `zh`. Prefer utterance timestamps in the corpus markdown.
+If `archive/corpus/<stem>.md` exists, skip ASR unless `--force`.
 Set `QS668_ASR_PROVIDER=openai` only for the OpenAI-compatible fallback.
 Write corpus under `archive/corpus/`. Never commit `.env`.
 
@@ -120,7 +136,7 @@ That writes `.raw` and wraps `.ogg` under `archive/audio/`. Do not combine with 
 
 ## After code changes
 
-- Python protocol helpers: `python tools/test_qs668_protocol.py`
+- Python helpers: `python tools/test_qs668_protocol.py`, `python tools/test_qs668_transcribe.py`, `python tools/test_qs668_bringup.py`
 - JavaScript SDK: `npm test` from the repository root
 - Protocol changes: update `docs/protocol.md` and `docs/protocol.zh-CN.md` together
 - Skill behavior changes: update this file, `docs/skill.md`, and `docs/skill.zh-CN.md` together

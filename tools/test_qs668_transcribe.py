@@ -31,14 +31,29 @@ class TranscribeHelperTests(unittest.TestCase):
 
     def test_utterances_and_merge(self):
         lines = MOD.utterances_to_lines(
-            [{"text": "你好", "start_time": 0, "end_time": 1200}],
+            [{"text": "你好", "start_time": 0, "end_time": 1200, "additions": {"speaker": "2"}}],
             offset_s=60,
+            timeline_mode="relative",
         )
-        self.assertEqual(lines, ["[01:00] 你好"])
-        result = MOD.ChunkResult(MOD.ChunkPlan(0, 60, 70), "你好", lines)
-        text, has_timeline = MOD.merge_transcript([result])
-        self.assertTrue(has_timeline)
-        self.assertEqual(text, "[01:00] 你好")
+        self.assertEqual(lines, ["[01:00] 说话人2：你好"])
+        base = MOD.datetime(2026, 10, 11, 16, 18, 58)
+        wall = MOD.utterances_to_lines(
+            [{"text": "你好", "start_time": 2000, "end_time": 3000, "additions": {"speaker": "1"}}],
+            offset_s=0,
+            base_time=base,
+            timeline_mode="absolute",
+        )
+        self.assertEqual(wall, ["[16:19:00] 说话人1：你好"])
+        after_midnight = MOD.utterances_to_lines(
+            [{"text": "跨天", "start_time": 0, "end_time": 1000, "additions": {"speaker": "2"}}],
+            offset_s=8 * 3600,  # 16:18:58 + 8h -> 00:18:58 next day
+            base_time=base,
+            timeline_mode="absolute",
+        )
+        self.assertEqual(after_midnight, ["[10-12 00:18:58] 说话人2：跨天"])
+        parsed = MOD.parse_recording_start(Path("archive/audio/note20261011-161858.wav"))
+        self.assertEqual(parsed, base)
+        self.assertEqual(MOD.doubao_language_value("zh", True), "zh-CN")
 
     def test_explain_doubao_error(self):
         text = MOD.explain_doubao_error("45000001", "unauthorized", 401)
@@ -69,7 +84,25 @@ class TranscribeHelperTests(unittest.TestCase):
             self.assertIn("title: \"拜访纪要\"", body)
             self.assertIn("customer: \"客户A\"", body)
             self.assertIn("sync_status: \"local\"", body)
-            self.assertIn("## Transcript", body)
+            self.assertIn("# 拜访纪要", body)
+            self.assertIn("[00:00] 你好", body)
+            self.assertNotIn("## Transcript", body)
+            self.assertEqual(body.count("customer:"), 1)
+
+    def test_should_skip_transcribe(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            audio = Path(tmp) / "note.wav"
+            audio.write_bytes(b"RIFF")
+            out_dir = Path(tmp) / "corpus"
+            self.assertIsNone(MOD.should_skip_transcribe(audio, out_dir, force=False))
+            corpus = out_dir / "note.md"
+            out_dir.mkdir()
+            corpus.write_text("x", encoding="utf-8")
+            skipped = MOD.should_skip_transcribe(audio, out_dir, force=False)
+            self.assertEqual(skipped, corpus)
+            self.assertIsNone(MOD.should_skip_transcribe(audio, out_dir, force=True))
 
 
 if __name__ == "__main__":

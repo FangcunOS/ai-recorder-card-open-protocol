@@ -39,7 +39,9 @@ python tools/qs668-bringup.py --address <ADDR> --import-first --out archive/audi
 
 `qs668-init-env.py` 在缺少 `.env` 时从 `.env.example` 生成；已有 `.env` 不会覆盖。转写前再请用户填入豆包密钥。
 
-导入后可直接转写：`--import-first --transcribe`。转写失败不回滚已导入音频。也可加 `--title`、`--customer` 写入 corpus 头信息。
+导入后可直接转写：`--import-first --transcribe`。转写失败不回滚已导入音频。也可加 `--title`、`--customer` 写入 corpus 头信息。若 `archive/corpus/<stem>.md` 已存在则默认跳过转写；与 `--transcribe` 一起加 `--force` 才重跑。
+
+批量：`--import-all --transcribe`，或可重复 / 逗号分隔的 `--filename`。`--import-first`、`--import-all`、`--filename` 三者只用其一。
 
 录音控制：`--record-state`、`--record start|pause|resume|save`。实时音频：`--realtime 5`。导入和实时不要同时跑。
 
@@ -60,9 +62,10 @@ python tools/qs668-bringup.py --address <ADDR> --import-first --out archive/audi
 ```bash
 python -m pip install -r tools/requirements.txt
 python tools/qs668-transcribe.py archive/audio/note20261011-161858.wav
+python tools/qs668-transcribe.py archive/audio/note20261011-161858.wav --force
 ```
 
-结果写入 `archive/corpus/<stem>.md`。特长音频仍可切片合并。若要改用 OpenAI 兼容接口，设 `QS668_ASR_PROVIDER=openai`。`.env` 不提交。
+结果写入 `archive/corpus/<stem>.md`；已存在则跳过，除非加 `--force`。默认开启说话人分离，时间线默认用真实时钟：从文件名 `noteYYYYMMDD-HHMMSS` 推算，正文形如 `[16:19:00] 说话人1：……`（跨天为 `MM-DD HH:MM:SS`）。可用 `--timeline relative` 改回相对时间。单人短录音也可能只有说话人1。特长音频仍可切片合并。若要改用 OpenAI 兼容接口，设 `QS668_ASR_PROVIDER=openai`。`.env` 不提交。
 
 手机、电脑和录音卡之间的数据各放哪里，见 [数据关系](./data-relationship.zh-CN.md)。
 

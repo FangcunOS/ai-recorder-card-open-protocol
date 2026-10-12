@@ -17,6 +17,7 @@ import argparse
 import base64
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -24,9 +25,15 @@ import tempfile
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import requests
+
+NOTE_TIME_RE = re.compile(
+    r"(?P<prefix>note)?(?P<date>\d{8})[-_](?P<clock>\d{6})",
+    re.IGNORECASE,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_AUDIO_DIR = ROOT / "archive" / "audio"
@@ -153,6 +160,13 @@ def resolve_config(args: argparse.Namespace) -> dict:
         "doubao_access_key": env_first("QS668_ASR_DOUBAO_ACCESS_KEY", "DOUBAO_STT_ACCESS_KEY"),
         "doubao_api_key": env_first("QS668_ASR_DOUBAO_API_KEY"),
         "doubao_resource_id": env_first("QS668_ASR_DOUBAO_RESOURCE_ID", default=DOUBAO_RESOURCE_ID),
+        "doubao_speaker": env_first("QS668_ASR_DOUBAO_SPEAKER", default="true").lower() not in {"0", "false", "no", "off"},
+        "doubao_ssd_version": env_first("QS668_ASR_DOUBAO_SSD_VERSION", default="300"),
+        "timeline_mode": (
+            args.timeline
+            or env_first("QS668_ASR_TIMELINE", default="absolute")
+        ).lower(),
+        "start_time": getattr(args, "start_time", None) or env_first("QS668_ASR_START_TIME"),
         "openai_api_key": env_first("QS668_ASR_API_KEY", "OPENAI_API_KEY"),
         "openai_base_url": env_first("QS668_ASR_BASE_URL", "OPENAI_BASE_URL", default="https://api.openai.com/v1").rstrip("/"),
         "openai_model": env_first("QS668_ASR_MODEL", default="whisper-1"),
@@ -212,6 +226,63 @@ def format_timestamp(seconds: float) -> str:
 
 def format_timestamp_ms(ms: float | int) -> str:
     return format_timestamp(float(ms) / 1000.0)
+
+
+def format_wall_time(moment: datetime) -> str:
+    return moment.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def format_body_timestamp(moment: datetime, recording_start: datetime | None) -> str:
+    """Compact stamp for transcript body.
+
+    Same calendar day as recording start -> HH:MM:SS
+    After midnight crossover -> MM-DD HH:MM:SS
+    No start anchor -> full YYYY-MM-DD HH:MM:SS
+    """
+    if recording_start is None:
+        return format_wall_time(moment)
+    if moment.date() == recording_start.date():
+        return moment.strftime("%H:%M:%S")
+    return moment.strftime("%m-%d %H:%M:%S")
+
+
+def parse_recording_start(audio_path: Path, explicit: str | None = None) -> datetime | None:
+    """Resolve wall-clock start from --start-time or noteYYYYMMDD-HHMMSS filename."""
+    if explicit:
+        text = explicit.strip()
+        for fmt in (
+            "%Y-%m-%d %H:%M:%S",
+            "%Y/%m/%d %H:%M:%S",
+            "%Y%m%d-%H%M%S",
+            "%Y%m%d_%H%M%S",
+            "%Y-%m-%dT%H:%M:%S",
+        ):
+            try:
+                return datetime.strptime(text, fmt)
+            except ValueError:
+                continue
+        raise SystemExit(
+            f"Invalid --start-time / QS668_ASR_START_TIME: {explicit!r}. "
+            "Use YYYY-MM-DD HH:MM:SS or YYYYMMDD-HHMMSS."
+        )
+
+    match = NOTE_TIME_RE.search(audio_path.stem)
+    if not match:
+        return None
+    try:
+        return datetime.strptime(match.group("date") + match.group("clock"), "%Y%m%d%H%M%S")
+    except ValueError:
+        return None
+
+
+def format_line_timestamp(offset_ms: float, base: datetime | None, mode: str) -> str:
+    if mode == "absolute" and base is not None:
+        moment = base + timedelta(milliseconds=offset_ms)
+        return format_body_timestamp(moment, base)
+    if mode == "absolute" and base is None:
+        # No anchor date available; keep relative mm:ss rather than inventing a day.
+        return format_timestamp_ms(offset_ms)
+    return format_timestamp_ms(offset_ms)
 
 
 def plan_chunks(duration_s: float, chunk_seconds: float) -> list[ChunkPlan]:
@@ -280,33 +351,63 @@ def doubao_headers(config: dict, request_id: str) -> dict[str, str]:
     return headers
 
 
-def utterances_to_lines(utterances: list, offset_s: float = 0.0) -> list[str]:
+def utterances_to_lines(
+    utterances: list,
+    offset_s: float = 0.0,
+    base_time: datetime | None = None,
+    timeline_mode: str = "absolute",
+) -> list[str]:
     lines: list[str] = []
     for item in utterances:
         text = str(item.get("text") or "").strip()
         if not text:
             continue
         start_ms = float(item.get("start_time") or 0) + offset_s * 1000
-        lines.append(f"[{format_timestamp_ms(start_ms)}] {text}")
+        stamp = format_line_timestamp(start_ms, base_time, timeline_mode)
+        additions = item.get("additions") or {}
+        speaker = str(additions.get("speaker") or item.get("speaker") or "").strip()
+        if speaker:
+            lines.append(f"[{stamp}] 说话人{speaker}：{text}")
+        else:
+            lines.append(f"[{stamp}] {text}")
     return lines
+
+
+def doubao_language_value(language: str | None, enable_speaker: bool) -> str | None:
+    """Speaker diarization only works when language is unset or zh-CN."""
+    if not language:
+        return None
+    normalized = language.strip()
+    if enable_speaker and normalized.lower() in {"zh", "zh-cn", "chinese"}:
+        return "zh-CN"
+    return normalized
 
 
 def transcribe_doubao(audio_path: Path, config: dict, offset_s: float = 0.0) -> ChunkResult:
     request_id = str(uuid.uuid4())
     headers = doubao_headers(config, request_id)
     audio_b64 = base64.b64encode(audio_path.read_bytes()).decode("ascii")
+    enable_speaker = bool(config.get("doubao_speaker"))
+    request_body = {
+        "model_name": "bigmodel",
+        "enable_itn": True,
+        "enable_punc": True,
+        "show_utterances": True,
+        "enable_speaker_info": enable_speaker,
+    }
+    if enable_speaker:
+        request_body["ssd_version"] = str(config.get("doubao_ssd_version") or "300")
+    language = doubao_language_value(config.get("language"), enable_speaker)
+    if language:
+        request_body["language"] = language
     payload = {
         "user": {"uid": "qs668-open-protocol"},
         "audio": {
             "data": audio_b64,
             "format": audio_format(audio_path),
         },
-        "request": {
-            "model_name": "bigmodel",
-        },
+        "request": request_body,
     }
-    if config["language"]:
-        payload["request"]["language"] = config["language"]
 
     submit = requests.post(DOUBAO_SUBMIT_URL, headers=headers, json=payload, timeout=120)
     status = submit.headers.get("X-Api-Status-Code", "")
@@ -335,7 +436,12 @@ def transcribe_doubao(audio_path: Path, config: dict, offset_s: float = 0.0) -> 
         text = str(result.get("text") or "").strip()
         utterances = result.get("utterances") or []
         if text or utterances:
-            timed = utterances_to_lines(utterances, offset_s=offset_s)
+            timed = utterances_to_lines(
+                utterances,
+                offset_s=offset_s,
+                base_time=config.get("recording_start"),
+                timeline_mode=config.get("timeline_mode") or "absolute",
+            )
             if not text and timed:
                 text = "\n".join(line.split("] ", 1)[-1] for line in timed)
             return ChunkResult(
@@ -380,12 +486,15 @@ def transcribe_openai(audio_path: Path, config: dict) -> ChunkResult:
     payload = response.json()
     text = str(payload.get("text") or "").strip()
     timed: list[str] = []
+    base = config.get("recording_start")
+    mode = config.get("timeline_mode") or "absolute"
     for item in payload.get("segments") or []:
         seg_text = str(item.get("text") or "").strip()
         if not seg_text:
             continue
-        start = float(item.get("start") or 0)
-        timed.append(f"[{format_timestamp(start)}] {seg_text}")
+        start_ms = float(item.get("start") or 0) * 1000
+        stamp = format_line_timestamp(start_ms, base, mode)
+        timed.append(f"[{stamp}] {seg_text}")
     if not text:
         raise RuntimeError(f"ASR returned empty text: {json.dumps(payload, ensure_ascii=False)[:500]}")
     return ChunkResult(plan=ChunkPlan(0, 0, 0), text=text, timed_lines=timed)
@@ -393,24 +502,37 @@ def transcribe_openai(audio_path: Path, config: dict) -> ChunkResult:
 
 def transcribe_file(audio_path: Path, config: dict, offset_s: float = 0.0) -> ChunkResult:
     if config["provider"] == "doubao":
-        result = transcribe_doubao(audio_path, config, offset_s=offset_s)
-    else:
-        result = transcribe_openai(audio_path, config)
-        if offset_s and result.timed_lines:
-            shifted = []
-            for line in result.timed_lines:
-                # Rebuild with absolute timeline.
-                if line.startswith("[") and "] " in line:
-                    stamp, body = line[1:].split("] ", 1)
-                    parts = stamp.split(":")
-                    seconds = 0
-                    for part in parts:
-                        seconds = seconds * 60 + int(part)
-                    shifted.append(f"[{format_timestamp(seconds + offset_s)}] {body}")
-                else:
-                    shifted.append(line)
-            result = ChunkResult(plan=result.plan, text=result.text, timed_lines=shifted)
-    return result
+        return transcribe_doubao(audio_path, config, offset_s=offset_s)
+
+    result = transcribe_openai(audio_path, config)
+    if not result.timed_lines:
+        return result
+    base = config.get("recording_start")
+    mode = config.get("timeline_mode") or "absolute"
+    shifted = []
+    for line in result.timed_lines:
+        if line.startswith("[") and "] " in line:
+            stamp, body = line[1:].split("] ", 1)
+            # Relative mm:ss / hh:mm:ss from OpenAI path before shift.
+            if mode == "absolute" and base is not None and re.fullmatch(r"\d{1,2}:\d{2}(:\d{2})?", stamp):
+                parts = [int(part) for part in stamp.split(":")]
+                seconds = 0
+                for part in parts:
+                    seconds = seconds * 60 + part
+                seconds += offset_s
+                moment = base + timedelta(seconds=seconds)
+                shifted.append(f"[{format_body_timestamp(moment, base)}] {body}")
+            elif " " not in stamp:
+                parts = [int(part) for part in stamp.split(":")]
+                seconds = 0
+                for part in parts:
+                    seconds = seconds * 60 + part
+                shifted.append(f"[{format_timestamp(seconds + offset_s)}] {body}")
+            else:
+                shifted.append(line)
+        else:
+            shifted.append(line)
+    return ChunkResult(plan=result.plan, text=result.text, timed_lines=shifted)
 
 
 def merge_transcript(results: list[ChunkResult]) -> tuple[str, bool]:
@@ -432,6 +554,20 @@ def yaml_escape(value: str) -> str:
     return f'"{text}"'
 
 
+def corpus_path_for(audio_path: Path, out_dir: Path) -> Path:
+    return Path(out_dir) / f"{Path(audio_path).stem}.md"
+
+
+def should_skip_transcribe(audio_path: Path, out_dir: Path, force: bool) -> Path | None:
+    """Return existing corpus path when ASR should be skipped; else None."""
+    if force:
+        return None
+    out_path = corpus_path_for(audio_path, out_dir)
+    if out_path.is_file():
+        return out_path
+    return None
+
+
 def write_corpus(
     audio_path: Path,
     text: str,
@@ -444,9 +580,11 @@ def write_corpus(
     title: str = "",
     customer: str = "",
     sync_status: str = "local",
+    recording_start: datetime | None = None,
+    timeline_mode: str = "absolute",
 ) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"{audio_path.stem}.md"
+    out_path = corpus_path_for(audio_path, out_dir)
     lang = language or "auto"
     relative_audio = audio_path
     try:
@@ -454,40 +592,55 @@ def write_corpus(
     except ValueError:
         pass
     title_value = title.strip() or audio_path.stem
-    timeline = "utterances" if has_timeline else "chunk-or-plain"
-    body = (
-        "---\n"
-        f"title: {yaml_escape(title_value)}\n"
-        f"customer: {yaml_escape(customer.strip())}\n"
-        f"sync_status: {yaml_escape(sync_status.strip() or 'local')}\n"
-        f"audio: {yaml_escape(relative_audio.as_posix())}\n"
-        f"language: {yaml_escape(lang)}\n"
-        f"duration: {yaml_escape(format_timestamp(duration_s))}\n"
-        f"chunks: {chunk_count}\n"
-        f"provider: {yaml_escape(provider)}\n"
-        f"timeline: {yaml_escape(timeline)}\n"
-        "---\n\n"
-        f"# {title_value}\n\n"
-        f"- audio: `{relative_audio.as_posix()}`\n"
-        f"- language: `{lang}`\n"
-        f"- duration: `{format_timestamp(duration_s)}`\n"
-        f"- chunks: `{chunk_count}`\n"
-        f"- provider: `{provider}`\n"
-        f"- timeline: `{timeline}`\n"
-        f"- sync_status: `{sync_status.strip() or 'local'}`\n"
-    )
+    if has_timeline and timeline_mode == "absolute" and recording_start is not None:
+        timeline = "wall-clock"
+    elif has_timeline:
+        timeline = "relative"
+    else:
+        timeline = "none"
+    recorded_at = format_wall_time(recording_start) if recording_start else ""
+
+    # Keep metadata only in YAML front matter. Body is title + transcript.
+    lines = [
+        "---",
+        f"title: {yaml_escape(title_value)}",
+        f"audio: {yaml_escape(relative_audio.as_posix())}",
+    ]
+    if recorded_at:
+        lines.append(f"recorded_at: {yaml_escape(recorded_at)}")
+    lines.append(f"duration: {yaml_escape(format_timestamp(duration_s))}")
+    lines.append(f"language: {yaml_escape(lang)}")
     if customer.strip():
-        body += f"- customer: `{customer.strip()}`\n"
-    body += (
-        "\n## Transcript\n\n"
-        f"{text}\n"
-    )
-    out_path.write_text(body, encoding="utf-8")
+        lines.append(f"customer: {yaml_escape(customer.strip())}")
+    lines.append(f"sync_status: {yaml_escape(sync_status.strip() or 'local')}")
+    lines.append(f"provider: {yaml_escape(provider)}")
+    lines.append(f"timeline: {yaml_escape(timeline)}")
+    if chunk_count > 1:
+        lines.append(f"chunks: {chunk_count}")
+    lines.extend([
+        "---",
+        "",
+        f"# {title_value}",
+        "",
+        text,
+        "",
+    ])
+    out_path.write_text("\n".join(lines), encoding="utf-8")
     return out_path
 
 
 def transcribe_maybe_split(audio_path: Path, config: dict) -> tuple[str, int, float, bool]:
     duration_s = probe_duration_seconds(audio_path)
+    recording_start = parse_recording_start(audio_path, config.get("start_time"))
+    config = dict(config)
+    config["recording_start"] = recording_start
+    mode = (config.get("timeline_mode") or "absolute").lower()
+    if mode == "absolute" and recording_start is None:
+        print("WARN cannot parse recording start from filename; using relative timeline")
+        config["timeline_mode"] = "relative"
+    elif mode == "absolute" and recording_start is not None:
+        print(f"ASR wall-clock start {format_wall_time(recording_start)}")
+
     if not needs_split(audio_path, duration_s, config["max_bytes"], config["max_seconds"]):
         print(f"ASR single file ({audio_path.stat().st_size} B, {duration_s:.1f}s)")
         result = transcribe_file(audio_path, config, offset_s=0.0)
@@ -540,6 +693,20 @@ def build_parser() -> argparse.ArgumentParser:
         default="local",
         help="Sync status for phone/PC list metadata (default: local)",
     )
+    parser.add_argument(
+        "--timeline",
+        choices=["absolute", "relative"],
+        help="absolute=wall clock from filename/start-time (default), relative=mm:ss from audio start",
+    )
+    parser.add_argument(
+        "--start-time",
+        help="Recording start time, e.g. '2026-10-11 16:18:58' or 20261011-161858",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-run ASR even when archive/corpus/<stem>.md already exists",
+    )
     return parser
 
 
@@ -560,16 +727,27 @@ def main() -> int:
     if not audio_path.is_file():
         raise SystemExit(f"Audio not found: {audio_path}")
 
+    out_dir = Path(args.out_dir)
+    existing = should_skip_transcribe(audio_path, out_dir, force=args.force)
+    if existing is not None:
+        print(f"SKIP corpus already exists: {existing} (pass --force to re-run)")
+        print(f"DONE {existing} skipped=1")
+        return 0
+
     print(
         f"ASR {audio_path} provider={config['provider']} "
         f"language={config['language'] or 'auto'}"
     )
     text, chunk_count, duration_s, has_timeline = transcribe_maybe_split(audio_path, config)
+    recording_start = parse_recording_start(audio_path, config.get("start_time"))
+    timeline_mode = config.get("timeline_mode") or "absolute"
+    if timeline_mode == "absolute" and recording_start is None:
+        timeline_mode = "relative"
     try:
         out_path = write_corpus(
             audio_path,
             text,
-            Path(args.out_dir),
+            out_dir,
             config["language"],
             chunk_count,
             duration_s,
@@ -578,6 +756,8 @@ def main() -> int:
             title=args.title,
             customer=args.customer,
             sync_status=args.sync_status,
+            recording_start=recording_start,
+            timeline_mode=timeline_mode,
         )
     except RuntimeError:
         raise
