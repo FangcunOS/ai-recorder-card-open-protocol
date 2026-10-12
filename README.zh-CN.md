@@ -57,7 +57,9 @@
 │   ├── skill.md
 │   ├── skill.zh-CN.md
 │   ├── data-relationship.md
-│   └── data-relationship.zh-CN.md
+│   ├── data-relationship.zh-CN.md
+│   ├── roadmap.md
+│   └── roadmap.zh-CN.md
 ├── examples/
 │   └── web-bluetooth/
 ├── sdk/
@@ -81,7 +83,7 @@ python tools/qs668-bringup.py --scan
 python tools/qs668-bringup.py --import-first --out archive/audio
 ```
 
-电脑、手机和录音卡的数据关系见 [数据关系](./docs/data-relationship.zh-CN.md)。
+电脑、手机和录音卡的数据关系见 [数据关系](./docs/data-relationship.zh-CN.md)。后续优先事项见 [路线图](./docs/roadmap.zh-CN.md)。
 
 ## 本地运行网页测试平台
 
@@ -129,6 +131,7 @@ CRC 使用 CRC-16/XMODEM，计算范围是 `LEN_LO LEN_HI TYPE CMD PARAMS...`。
 - [Protocol documentation](./docs/protocol.md)
 - [接入技能](./docs/skill.zh-CN.md)
 - [数据关系](./docs/data-relationship.zh-CN.md)
+- [路线图](./docs/roadmap.zh-CN.md)
 - [JavaScript SDK](./sdk/javascript/)
 - [Web Bluetooth 示例](./examples/web-bluetooth/)
 

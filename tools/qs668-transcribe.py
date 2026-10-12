@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 import re
@@ -558,13 +559,67 @@ def corpus_path_for(audio_path: Path, out_dir: Path) -> Path:
     return Path(out_dir) / f"{Path(audio_path).stem}.md"
 
 
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def parse_corpus_front_matter(text: str) -> tuple[dict[str, str], str]:
+    if not text.startswith("---"):
+        return {}, text
+    end = text.find("\n---", 3)
+    if end < 0:
+        return {}, text
+    front = text[3:end].strip()
+    body = text[end + 4:].lstrip("\n")
+    meta: dict[str, str] = {}
+    for line in front.splitlines():
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        meta[key.strip()] = value.strip().strip('"').strip("'")
+    return meta, body
+
+
+def corpus_body_nonempty(body: str) -> bool:
+    for line in body.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        return True
+    return False
+
+
+def corpus_matches_audio(corpus_path: Path, audio_path: Path) -> tuple[bool, str]:
+    """Whether existing corpus may skip ASR for this audio (data-relationship skip rules)."""
+    text = Path(corpus_path).read_text(encoding="utf-8")
+    meta, body = parse_corpus_front_matter(text)
+    if not corpus_body_nonempty(body):
+        return False, "empty transcript body"
+    claimed = (meta.get("audio_sha256") or "").strip().lower()
+    if not claimed:
+        return False, "missing audio_sha256"
+    actual = sha256_file(audio_path)
+    if claimed != actual:
+        return False, f"audio_sha256 mismatch (corpus={claimed[:12]}… audio={actual[:12]}…)"
+    return True, "ok"
+
+
 def should_skip_transcribe(audio_path: Path, out_dir: Path, force: bool) -> Path | None:
     """Return existing corpus path when ASR should be skipped; else None."""
     if force:
         return None
     out_path = corpus_path_for(audio_path, out_dir)
-    if out_path.is_file():
+    if not out_path.is_file():
+        return None
+    ok, detail = corpus_matches_audio(out_path, audio_path)
+    if ok:
         return out_path
+    print(f"WARN corpus present but not reusable ({detail}); will re-run ASR")
+    print(f"WARN pass --force after fixing, or let this run rewrite {out_path}")
     return None
 
 
@@ -582,6 +637,8 @@ def write_corpus(
     sync_status: str = "local",
     recording_start: datetime | None = None,
     timeline_mode: str = "absolute",
+    transcribed_on: str = "pc",
+    audio_sha256: str | None = None,
 ) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = corpus_path_for(audio_path, out_dir)
@@ -599,12 +656,15 @@ def write_corpus(
     else:
         timeline = "none"
     recorded_at = format_wall_time(recording_start) if recording_start else ""
+    digest = audio_sha256 or sha256_file(audio_path)
+    side = (transcribed_on or "pc").strip() or "pc"
 
     # Keep metadata only in YAML front matter. Body is title + transcript.
     lines = [
         "---",
         f"title: {yaml_escape(title_value)}",
         f"audio: {yaml_escape(relative_audio.as_posix())}",
+        f"audio_sha256: {yaml_escape(digest)}",
     ]
     if recorded_at:
         lines.append(f"recorded_at: {yaml_escape(recorded_at)}")
@@ -614,6 +674,7 @@ def write_corpus(
         lines.append(f"customer: {yaml_escape(customer.strip())}")
     lines.append(f"sync_status: {yaml_escape(sync_status.strip() or 'local')}")
     lines.append(f"provider: {yaml_escape(provider)}")
+    lines.append(f"transcribed_on: {yaml_escape(side)}")
     lines.append(f"timeline: {yaml_escape(timeline)}")
     if chunk_count > 1:
         lines.append(f"chunks: {chunk_count}")
@@ -705,7 +766,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Re-run ASR even when archive/corpus/<stem>.md already exists",
+        help=(
+            "Re-run ASR even when corpus/<stem>.md is reusable "
+            "(non-empty body and matching audio_sha256)"
+        ),
     )
     return parser
 
@@ -728,9 +792,11 @@ def main() -> int:
         raise SystemExit(f"Audio not found: {audio_path}")
 
     out_dir = Path(args.out_dir)
+    audio_digest = sha256_file(audio_path)
+    print(f"ASR audio_sha256 {audio_digest}")
     existing = should_skip_transcribe(audio_path, out_dir, force=args.force)
     if existing is not None:
-        print(f"SKIP corpus already exists: {existing} (pass --force to re-run)")
+        print(f"SKIP corpus reusable: {existing} (pass --force to re-run)")
         print(f"DONE {existing} skipped=1")
         return 0
 
@@ -758,6 +824,8 @@ def main() -> int:
             sync_status=args.sync_status,
             recording_start=recording_start,
             timeline_mode=timeline_mode,
+            transcribed_on="pc",
+            audio_sha256=audio_digest,
         )
     except RuntimeError:
         raise

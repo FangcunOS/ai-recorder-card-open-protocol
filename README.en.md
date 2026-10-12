@@ -42,7 +42,9 @@ Scan to purchase an AI recorder card development sample:
 │   ├── skill.md
 │   ├── skill.zh-CN.md
 │   ├── data-relationship.md
-│   └── data-relationship.zh-CN.md
+│   ├── data-relationship.zh-CN.md
+│   ├── roadmap.md
+│   └── roadmap.zh-CN.md
 ├── examples/
 │   └── web-bluetooth/
 ├── sdk/
@@ -66,7 +68,7 @@ python tools/qs668-bringup.py --scan
 python tools/qs668-bringup.py --import-first --out archive/audio
 ```
 
-Where the PC, phone, and recorder card each keep data is in [Data relationship](./docs/data-relationship.md).
+Where the PC, phone, and recorder card each keep data is in [Data relationship](./docs/data-relationship.md). Near-term priorities are in the [Roadmap](./docs/roadmap.md).
 
 ## Quick Start
 
@@ -114,6 +116,7 @@ Read more:
 - [中文协议文档](./docs/protocol.zh-CN.md)
 - [Bring-up skill](./docs/skill.md)
 - [Data relationship](./docs/data-relationship.md)
+- [Roadmap](./docs/roadmap.md)
 - [JavaScript SDK](./sdk/javascript/)
 - [Web Bluetooth example](./examples/web-bluetooth/)
 

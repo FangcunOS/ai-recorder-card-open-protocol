@@ -67,6 +67,7 @@ class TranscribeHelperTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             audio = Path(tmp) / "demo.wav"
             audio.write_bytes(b"RIFF")
+            digest = MOD.sha256_file(audio)
             path = MOD.write_corpus(
                 audio,
                 "[00:00] 你好",
@@ -84,25 +85,68 @@ class TranscribeHelperTests(unittest.TestCase):
             self.assertIn("title: \"拜访纪要\"", body)
             self.assertIn("customer: \"客户A\"", body)
             self.assertIn("sync_status: \"local\"", body)
+            self.assertIn(f"audio_sha256: \"{digest}\"", body)
+            self.assertIn("transcribed_on: \"pc\"", body)
             self.assertIn("# 拜访纪要", body)
             self.assertIn("[00:00] 你好", body)
             self.assertNotIn("## Transcript", body)
             self.assertEqual(body.count("customer:"), 1)
 
-    def test_should_skip_transcribe(self):
+    def test_should_skip_transcribe_requires_hash_and_body(self):
         import tempfile
 
         with tempfile.TemporaryDirectory() as tmp:
             audio = Path(tmp) / "note.wav"
-            audio.write_bytes(b"RIFF")
+            audio.write_bytes(b"RIFFDATA")
             out_dir = Path(tmp) / "corpus"
             self.assertIsNone(MOD.should_skip_transcribe(audio, out_dir, force=False))
-            corpus = out_dir / "note.md"
-            out_dir.mkdir()
-            corpus.write_text("x", encoding="utf-8")
-            skipped = MOD.should_skip_transcribe(audio, out_dir, force=False)
-            self.assertEqual(skipped, corpus)
+
+            digest = MOD.sha256_file(audio)
+            good = MOD.write_corpus(
+                audio,
+                "[00:00] 你好",
+                out_dir,
+                "zh",
+                1,
+                1.0,
+                "doubao",
+                False,
+                audio_sha256=digest,
+            )
+            self.assertEqual(MOD.should_skip_transcribe(audio, out_dir, force=False), good)
             self.assertIsNone(MOD.should_skip_transcribe(audio, out_dir, force=True))
+
+            # Empty body (title only) must not skip.
+            good.write_text(
+                "---\n"
+                f'audio_sha256: "{digest}"\n'
+                "---\n\n"
+                "# note\n\n",
+                encoding="utf-8",
+            )
+            self.assertIsNone(MOD.should_skip_transcribe(audio, out_dir, force=False))
+
+            # Missing hash must not skip.
+            good.write_text(
+                "---\n"
+                'title: "note"\n'
+                "---\n\n"
+                "# note\n\n"
+                "hello\n",
+                encoding="utf-8",
+            )
+            self.assertIsNone(MOD.should_skip_transcribe(audio, out_dir, force=False))
+
+            # Mismatch must not skip.
+            good.write_text(
+                "---\n"
+                'audio_sha256: "' + ("0" * 64) + '"\n'
+                "---\n\n"
+                "# note\n\n"
+                "hello\n",
+                encoding="utf-8",
+            )
+            self.assertIsNone(MOD.should_skip_transcribe(audio, out_dir, force=False))
 
 
 if __name__ == "__main__":

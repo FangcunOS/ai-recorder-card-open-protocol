@@ -53,8 +53,9 @@ python tools/qs668-bringup.py --import-first --transcribe --out archive/audio
 After the first success, the address is cached in `.qs668-device` (gitignored).
 Later runs can omit `--address`. `--transcribe` runs cloud ASR after a
 successful import; if ASR fails, keep the audio and warn. When
-`archive/corpus/<stem>.md` already exists, transcription skips by default;
-pass `--force` with `--transcribe` to re-run and spend ASR quota again.
+`archive/corpus/<stem>.md` is reusable (non-empty body and matching
+`audio_sha256`), transcription skips by default; pass `--force` with
+`--transcribe` to re-run and spend ASR quota again.
 
 Batch import (one BLE session):
 
@@ -120,7 +121,8 @@ Default provider is Doubao / Volcengine Seed ASR. First run
 `python tools/qs668-init-env.py`, then ask the user to fill
 `QS668_ASR_DOUBAO_APP_ID` and `QS668_ASR_DOUBAO_ACCESS_KEY` in `.env`.
 Default language is `zh`. Prefer utterance timestamps in the corpus markdown.
-If `archive/corpus/<stem>.md` exists, skip ASR unless `--force`.
+Skip ASR only when corpus body is non-empty and `audio_sha256` matches the
+audio file; otherwise re-run (or pass `--force`).
 Set `QS668_ASR_PROVIDER=openai` only for the OpenAI-compatible fallback.
 Write corpus under `archive/corpus/`. Never commit `.env`.
 
