@@ -47,7 +47,7 @@
 | 电脑音频 | `archive/audio/` | `archive/audio/note20260710-162938.wav` |
 | 电脑语料 | `archive/corpus/` | `archive/corpus/note20260710-162938.md` |
 
-这两个目录只留在本机。录音和语料不提交。目录里的 `.gitkeep` 用来保住空目录。对话接入时用 `tools/qs668-bringup.py` 把导入结果直接写进 `archive/audio/`。
+这两个目录只留在本机。录音和语料不提交。目录里的 `.gitkeep` 用来保住空目录。对话接入时用 `tools/qs668-bringup.py` 把导入结果直接写进 `archive/audio/`。云转写用 `tools/qs668-transcribe.py`，配置见仓库根目录 `.env.example`，结果写入 `archive/corpus/`。
 
 ## 一份录音落在哪
 

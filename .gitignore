@@ -3,6 +3,7 @@ node_modules/
 dist/
 coverage/
 *.log
+.env
 .qs668-device
 tools/__pycache__/
 *.pyc

@@ -423,7 +423,10 @@ async def run(args: argparse.Namespace) -> int:
             target = args.filename or files[0].name
             path = await import_file(session, target, Path(args.out))
             print(f"DONE {path}")
-            print("DONE corpus left empty under archive/corpus/")
+            if args.transcribe:
+                await asyncio.to_thread(run_transcribe_after_import, path, args)
+            else:
+                print("DONE corpus left empty under archive/corpus/")
             return 0
 
         if args.status or args.record_state or record_action:
@@ -435,6 +438,35 @@ async def run(args: argparse.Namespace) -> int:
         await session.disconnect()
 
 
+def run_transcribe_after_import(audio_path: Path, args: argparse.Namespace) -> None:
+    """Best-effort cloud ASR. Import already succeeded; never undo the audio file."""
+    init_env = TOOLS_DIR / "qs668-init-env.py"
+    if init_env.exists():
+        subprocess.run([sys.executable, str(init_env)], check=False)
+    cmd = [
+        sys.executable,
+        str(TOOLS_DIR / "qs668-transcribe.py"),
+        str(audio_path),
+        "--out-dir",
+        str(ROOT / "archive" / "corpus"),
+    ]
+    if getattr(args, "title", ""):
+        cmd.extend(["--title", args.title])
+    if getattr(args, "customer", ""):
+        cmd.extend(["--customer", args.customer])
+    print("INFO running cloud transcription after import")
+    completed = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if completed.stdout:
+        print(completed.stdout.rstrip())
+    if completed.returncode == 0:
+        print("DONE transcription")
+        return
+    detail = (completed.stderr or completed.stdout or "transcription failed").strip()
+    print(f"WARN transcription failed after successful import: {detail}")
+    print("WARN fix .env credentials/quota, then retry:")
+    print(f"  python tools/qs668-transcribe.py {audio_path}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="QS668 BLE bring-up into archive/audio/")
     parser.add_argument("--scan", action="store_true", help="Scan for AE20 devices and exit")
@@ -443,6 +475,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--list", action="store_true", help="Read the on-card file list")
     parser.add_argument("--import-first", action="store_true", help="Import the first list entry")
     parser.add_argument("--filename", help="Import this list name (extension may be restored)")
+    parser.add_argument(
+        "--transcribe",
+        action="store_true",
+        help="After import, run cloud ASR into archive/corpus/ (requires Doubao/.env)",
+    )
+    parser.add_argument("--title", default="", help="Corpus title when used with --transcribe")
+    parser.add_argument("--customer", default="", help="Customer label when used with --transcribe")
     parser.add_argument("--record-state", action="store_true", help="Read recording state")
     parser.add_argument(
         "--record",
@@ -462,6 +501,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
+    if args.transcribe and not (args.import_first or args.filename):
+        parser.error("--transcribe requires --import-first or --filename")
     if not any([
         args.scan,
         args.status,

@@ -32,14 +32,27 @@ Codex and Cursor drive bring-up through the CLI. Audio is written straight to
 `archive/audio/`. A person may still need to power the card and allow the first
 Windows Bluetooth access.
 
+At the start of bring-up or before transcription, ensure local env exists:
+
+```bash
+python tools/qs668-init-env.py
+```
+
+This copies `.env.example` to `.env` only when `.env` is missing. Never overwrite
+an existing `.env` unless the user explicitly asks for `--force`. Ask the user
+to fill Doubao keys in `.env`; do not invent or commit secrets.
+
 ```bash
 python -m pip install -r tools/requirements.txt
+python tools/qs668-init-env.py
 python tools/qs668-bringup.py --scan
 python tools/qs668-bringup.py --address <ADDR> --import-first --out archive/audio
+python tools/qs668-bringup.py --import-first --transcribe --out archive/audio
 ```
 
 After the first success, the address is cached in `.qs668-device` (gitignored).
-Later runs can omit `--address`.
+Later runs can omit `--address`. `--transcribe` runs cloud ASR after a
+successful import; if ASR fails, keep the audio and warn.
 
 Useful variants:
 
@@ -79,6 +92,21 @@ Use `website/` only when a person is validating in Chrome or Edge. Start
 `python -m http.server 8080` from `website/`, open `http://localhost:8080`, and
 click “连接设备” or “兼容扫描”. Browser downloads are not the Done path; copy
 them into `archive/audio/` only if the CLI cannot run.
+
+## Cloud transcription (optional)
+
+After an import, when the user asks to transcribe:
+
+```bash
+python tools/qs668-transcribe.py archive/audio/<stem>.wav
+```
+
+Default provider is Doubao / Volcengine Seed ASR. First run
+`python tools/qs668-init-env.py`, then ask the user to fill
+`QS668_ASR_DOUBAO_APP_ID` and `QS668_ASR_DOUBAO_ACCESS_KEY` in `.env`.
+Default language is `zh`. Prefer utterance timestamps in the corpus markdown.
+Set `QS668_ASR_PROVIDER=openai` only for the OpenAI-compatible fallback.
+Write corpus under `archive/corpus/`. Never commit `.env`.
 
 ## Realtime audio (optional)
 

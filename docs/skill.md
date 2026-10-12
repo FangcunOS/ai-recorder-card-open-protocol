@@ -32,9 +32,14 @@ The skill treats the CLI as the Done path. Audio is written straight to `archive
 
 ```bash
 python -m pip install -r tools/requirements.txt
+python tools/qs668-init-env.py
 python tools/qs668-bringup.py --scan
 python tools/qs668-bringup.py --address <ADDR> --import-first --out archive/audio
 ```
+
+`qs668-init-env.py` creates `.env` from `.env.example` only when `.env` is missing. Ask the user to fill Doubao keys before transcription.
+
+After import, `--import-first --transcribe` runs cloud ASR. A failed transcription does not undo the imported audio. Optional `--title` / `--customer` go into corpus front matter.
 
 Recording control: `--record-state`, `--record start|pause|resume|save`. Realtime audio: `--realtime 5`. Do not run import and realtime together.
 
@@ -48,7 +53,16 @@ The first connection may still need a person to power the card and allow system 
 
 The done criteria are in the Done section of `SKILL.md`: the CLI reads battery, lists files, imports one file with a single full write into `archive/audio/`, leaves `archive/corpus/` empty, and never deletes on-card files.
 
-Realtime transcription, segment import, and the authorization code are outside this skill's required scope. Run realtime audio only when the user asks for it, and wrap raw OPUS with `tools/qs668-raw-opus-to-ogg.py`.
+Segment import and the authorization code are outside this skill's required scope. Run realtime audio only when the user asks for it, and wrap raw OPUS with `tools/qs668-raw-opus-to-ogg.py`.
+
+After import, optional cloud ASR defaults to [Doubao / Volcengine file ASR](https://docs.volcengine.com/docs/DoubaoVoice/ProductOverview-6?lang=zh). Run `python tools/qs668-init-env.py`, then set `QS668_ASR_DOUBAO_APP_ID` and `QS668_ASR_DOUBAO_ACCESS_KEY` in `.env`. Default language is `zh`. Utterance timestamps are written as `[mm:ss] text` when the API returns them:
+
+```bash
+python -m pip install -r tools/requirements.txt
+python tools/qs668-transcribe.py archive/audio/note20261011-161858.wav
+```
+
+Output goes to `archive/corpus/<stem>.md`. Very long files can still be split and merged. Set `QS668_ASR_PROVIDER=openai` for an OpenAI-compatible fallback. Do not commit `.env`.
 
 Where the phone, PC, and recorder card each keep data is described in [Data relationship](./data-relationship.md).
 

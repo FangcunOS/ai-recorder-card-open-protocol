@@ -47,7 +47,7 @@ The PC's authoritative copies live in `archive/` inside this repository. Audio a
 | PC audio | `archive/audio/` | `archive/audio/note20260710-162938.wav` |
 | PC corpus | `archive/corpus/` | `archive/corpus/note20260710-162938.md` |
 
-These directories stay on the local machine. Recordings and corpus text are not committed. Each `.gitkeep` exists so the empty directory remains. Chat bring-up writes imports with `tools/qs668-bringup.py` straight into `archive/audio/`.
+These directories stay on the local machine. Recordings and corpus text are not committed. Each `.gitkeep` exists so the empty directory remains. Chat bring-up writes imports with `tools/qs668-bringup.py` straight into `archive/audio/`. Cloud transcription uses `tools/qs668-transcribe.py` with `.env.example` at the repo root and writes `archive/corpus/`.
 
 ## Where one recording lives
 
