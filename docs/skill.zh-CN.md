@@ -1,0 +1,60 @@
+# QS668 AI录音卡接入技能
+
+[English](./skill.md)
+
+这份文档说明 Codex 和 Cursor 使用的接入技能放在哪里、覆盖什么。协议字节以 [中文协议](./protocol.zh-CN.md) 和 [Protocol](./protocol.md) 为准。技能操作步骤只写在 [SKILL.md](../.agents/skills/qs668-bringup/SKILL.md)。
+
+## 文件
+
+| 文件 | 读者 |
+| --- | --- |
+| `.agents/skills/qs668-bringup/SKILL.md` | Cursor、Codex |
+| `tools/qs668-bringup.py` | 对话里调用的 CLI 主机 |
+| `tools/qs668_protocol.py` | CLI 使用的帧辅助 |
+| `docs/skill.zh-CN.md` | 维护者（中文） |
+| `docs/skill.md` | 维护者（英文） |
+
+在本仓库中打开工程时，Cursor 和 Codex 会扫描 `.agents/skills/` 并加载 `qs668-bringup`。不要再复制一份到 `.cursor/skills/` 或 `.codex/skills/`。
+
+## 在自己的 App 工程里使用
+
+把目录 `.agents/skills/qs668-bringup/` 复制到目标工程的同名路径：
+
+```text
+your-app/.agents/skills/qs668-bringup/SKILL.md
+```
+
+目标工程需要能读到协议文档、JavaScript SDK，以及 `tools/qs668-bringup.py` 所用的协议辅助；或把这些材料一并放进该工程。
+
+## 主路径：CLI
+
+技能以 CLI 为准，音频直接写入 `archive/audio/`：
+
+```bash
+python -m pip install -r tools/requirements.txt
+python tools/qs668-bringup.py --scan
+python tools/qs668-bringup.py --address <ADDR> --import-first --out archive/audio
+```
+
+录音控制：`--record-state`、`--record start|pause|resume|save`。实时音频：`--realtime 5`。导入和实时不要同时跑。
+
+第一次连接仍可能需要人开卡并允许系统蓝牙。成功后地址缓存在 `.qs668-device`。网页测试平台只作人工核对；浏览器下载目录不是 Done 路径。
+
+## 技能覆盖的路径
+
+1. 读状态：电量、容量、固件版本。
+2. 控制录音，并在设备提供 AE23 时接收机身按键事件。
+3. 读取文件列表，或接收实时音频。两条传输不要同时进行。
+
+完成标准在 `SKILL.md` 的 Done 一节：CLI 读到电量、列出文件、整帧导入一个文件到 `archive/audio/`，`archive/corpus/` 留空，并且不删除卡内文件。
+
+实时转写、分段导入和授权码不属于这条技能的必达范围。实时音频只有在用户明确要求时才跑，原始 OPUS 用 `tools/qs668-raw-opus-to-ogg.py` 包成 Ogg。
+
+手机、电脑和录音卡之间的数据各放哪里，见 [数据关系](./data-relationship.zh-CN.md)。
+
+## 维护
+
+- 修改技能行为时，同时更新 `SKILL.md`、`docs/skill.md` 和 `docs/skill.zh-CN.md`。
+- 修改命令或帧格式时，改协议文档，不在技能文档里另写一份命令表。
+- Python 辅助改动后运行 `python tools/test_qs668_protocol.py`。
+- JavaScript SDK 改动后在仓库根目录运行 `npm test`。
